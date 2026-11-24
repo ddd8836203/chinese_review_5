@@ -17,10 +17,18 @@ const USERS = [
 
 const ALL_BATCH_TYPES = ['寫國字', '寫注音', '原本題庫', '新題庫擴充', '段考真題'];
 
+const DIFFICULTY_TIERS = [
+  { id: 'easy', label: '🟢 基礎容易 (★1-2)', short: '🟢 基礎', match: q => (q.difficulty || 2) <= 2 },
+  { id: 'mid',  label: '🟡 中等轉彎 (★3)',   short: '🟡 中等', match: q => (q.difficulty || 2) === 3 },
+  { id: 'hard', label: '🔴 進階挑戰 (★4-5)', short: '🔴 進階', match: q => (q.difficulty || 2) >= 4 }
+];
+const ALL_DIFF_IDS = DIFFICULTY_TIERS.map(d => d.id);
+
 const state = {
   currentUser: localStorage.getItem(ACTIVE_USER_KEY) || 'hugo',
   view: 'dashboard', // 'dashboard' | 'quiz' | 'result' | 'error_book' | 'print' | 'export'
   selectedBatches: [...ALL_BATCH_TYPES],
+  selectedDifficulties: [...ALL_DIFF_IDS],
   examSchools: { EXAM_FINAL: 'ALL' },
   idiomSubFilter: 'ALL', // 'ALL' | 'CTX' | 'MEAN_CLS'
 
@@ -50,6 +58,7 @@ const state = {
     unitIds: ['EXAM_FINAL'],
     topicId: null,
     batches: [...ALL_BATCH_TYPES],
+    difficulties: [...ALL_DIFF_IDS],
     count: 10,
     printMode: 'student' // 'student' | 'parent'
   },
@@ -516,7 +525,7 @@ function setSelectedSchool(unitId, schoolVal) {
 }
 
 function getExamSchoolsList(unitId = 'EXAM_FINAL') {
-  const bank = getCleanBank().filter(q => q.lessonId === unitId);
+  const bank = filterQuestionsByDifficulty(getCleanBank().filter(q => q.lessonId === unitId));
   const map = {};
   bank.forEach(q => {
     if (q.school) map[q.school] = (map[q.school] || 0) + 1;
@@ -868,6 +877,24 @@ function filterQuestionsByBatches(list) {
   return list.filter(q => state.selectedBatches.includes(q.batch));
 }
 
+function filterQuestionsByDifficulty(list, selectedDiffs = state.selectedDifficulties) {
+  const activeDiffs = Array.isArray(selectedDiffs) && selectedDiffs.length > 0 ? selectedDiffs : ALL_DIFF_IDS;
+  if (activeDiffs.length === ALL_DIFF_IDS.length) return list;
+  const matchers = DIFFICULTY_TIERS.filter(d => activeDiffs.includes(d.id)).map(d => d.match);
+  return list.filter(q => matchers.some(fn => fn(q)));
+}
+
+function getDifficultyFilterLabel(selectedDiffs = state.selectedDifficulties) {
+  const activeDiffs = Array.isArray(selectedDiffs) && selectedDiffs.length > 0 ? selectedDiffs : ALL_DIFF_IDS;
+  if (activeDiffs.length >= ALL_DIFF_IDS.length) return '';
+  return DIFFICULTY_TIERS.filter(d => activeDiffs.includes(d.id)).map(d => d.short).join(' + ');
+}
+
+function syncPrintDiffFromDashboard() {
+  state.printConfig.difficulties = [...(state.selectedDifficulties && state.selectedDifficulties.length > 0 ? state.selectedDifficulties : ALL_DIFF_IDS)];
+  state.printSelectionIds = null;
+}
+
 function getUnitStats(unitId) {
   const bank = getCleanBank();
   let all = bank.filter(q => belongsToUnit(q, unitId));
@@ -877,8 +904,9 @@ function getUnitStats(unitId) {
       all = all.filter(q => q.school === selSch);
     }
   }
-  const active = filterQuestionsByBatches(all);
-  const pool = active.length > 0 ? active : all;
+  const activeBatch = filterQuestionsByBatches(all);
+  const batchBase = activeBatch.length > 0 ? activeBatch : all;
+  const pool = filterQuestionsByDifficulty(batchBase);
   const eb = getErrorBook();
   const ms = getMasteredIds();
   const errCount = pool.filter(q => eb.includes(q.id)).length;
@@ -910,29 +938,34 @@ function getTopicPool(topicId, subFilter = 'ALL') {
 function getTopicStats(topicId) {
   const subF = topicId === 'IDM' ? (state.idiomSubFilter || 'ALL') : 'ALL';
   const all = getTopicPool(topicId, subF);
-  const active = filterQuestionsByBatches(all);
-  const pool = active.length > 0 ? active : all;
+  const activeBatch = filterQuestionsByBatches(all);
+  const batchBase = activeBatch.length > 0 ? activeBatch : all;
+  const pool = filterQuestionsByDifficulty(batchBase);
   const eb = getErrorBook();
   const ms = getMasteredIds();
   const errCount = pool.filter(q => eb.includes(q.id)).length;
   const mastered = pool.filter(q => ms.includes(q.id) && !eb.includes(q.id)).length;
   const pct = pool.length > 0 ? Math.round((mastered / pool.length) * 100) : 0;
   const hwCount = pool.filter(q => q.type === 'handwriting').length;
+  const idmAll = topicId === 'IDM' ? filterQuestionsByDifficulty(getTopicPool('IDM', 'ALL')) : [];
+  const idmCtx = topicId === 'IDM' ? filterQuestionsByDifficulty(getTopicPool('IDM', 'CTX')) : [];
+  const idmMean = topicId === 'IDM' ? filterQuestionsByDifficulty(getTopicPool('IDM', 'MEAN_CLS')) : [];
   return {
     total: pool.length,
     errCount,
     mastered,
     pct,
     hwCount,
-    rawTotal: getTopicPool(topicId, 'ALL').length,
-    ctxCount: topicId === 'IDM' ? getTopicPool('IDM', 'CTX').length : 0,
-    meanClsCount: topicId === 'IDM' ? getTopicPool('IDM', 'MEAN_CLS').length : 0
+    rawTotal: idmAll.length,
+    ctxCount: idmCtx.length,
+    meanClsCount: idmMean.length
   };
 }
 
 function getGlobalStats() {
   const bank = getCleanBank();
-  const active = filterQuestionsByBatches(bank);
+  const activeBatch = filterQuestionsByBatches(bank);
+  const active = filterQuestionsByDifficulty(activeBatch.length > 0 ? activeBatch : bank);
   const eb = getErrorBook();
   const ms = getMasteredIds();
   const mastered = active.filter(q => ms.includes(q.id) && !eb.includes(q.id)).length;
@@ -962,6 +995,14 @@ function renderDashboardView() {
   const chipsHtml = chipsToShow.map(b => {
     const on = state.selectedBatches.includes(b);
     return `<button type="button" class="chip ${on ? 'on' : ''}" data-batch="${b}"><span class="dot"></span>${iconMap[b] || ''}${b}</button>`;
+  }).join('');
+
+  const batchBaseForDiff = filterQuestionsByBatches(bankForBatches);
+  const diffPoolBase = batchBaseForDiff.length > 0 ? batchBaseForDiff : bankForBatches;
+  const diffChipsHtml = DIFFICULTY_TIERS.map(d => {
+    const on = state.selectedDifficulties.includes(d.id);
+    const cnt = diffPoolBase.filter(d.match).length;
+    return `<button type="button" class="chip diff-${d.id} ${on ? 'on' : ''}" data-diff-tier="${d.id}">${d.label} <span class="chip-cnt">${cnt}</span></button>`;
   }).join('');
 
   const unitCardsHtml = LESSONS.map(u => {
@@ -1050,6 +1091,14 @@ function renderDashboardView() {
     </section>
   `;
 
+  const pDiffs = Array.isArray(state.printConfig.difficulties) && state.printConfig.difficulties.length > 0
+    ? state.printConfig.difficulties
+    : [...ALL_DIFF_IDS];
+  const printDiffChipsHtml = DIFFICULTY_TIERS.map(d => {
+    const on = pDiffs.includes(d.id);
+    return `<button type="button" class="chip diff-${d.id} ${on ? 'on' : ''}" data-print-diff-tier="${d.id}">${d.label}</button>`;
+  }).join('');
+
   const topicsList = getCleanTopics();
   const topicCardsHtml = topicsList.map(t => {
     const st = getTopicStats(t.id);
@@ -1117,6 +1166,10 @@ function renderDashboardView() {
             <span class="label">題庫範圍：</span>
             ${chipsHtml}
           </div>
+          <div class="filters difficulty-filters" style="margin-top: 10px;">
+            <span class="label">⭐ 星星難度：</span>
+            ${diffChipsHtml}
+          </div>
         </div>
         <div class="stats">
           <div class="stat pri"><b>${g.pct}%</b><span>全冊掌握度</span></div>
@@ -1176,6 +1229,24 @@ function renderDashboardView() {
     });
   });
 
+  // 綁定星星難度晶片篩選
+  app.querySelectorAll('.chip[data-diff-tier]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const tid = btn.getAttribute('data-diff-tier');
+      if (state.selectedDifficulties.includes(tid)) {
+        if (state.selectedDifficulties.length > 1) {
+          state.selectedDifficulties = state.selectedDifficulties.filter(x => x !== tid);
+        } else {
+          showToast('至少保留一個難度等級喔！');
+          return;
+        }
+      } else {
+        state.selectedDifficulties.push(tid);
+      }
+      renderDashboardView();
+    });
+  });
+
   // 綁定人員快速切換
   app.querySelectorAll('[data-quick-user]').forEach(btn => {
     btn.addEventListener('click', () => switchUser(btn.getAttribute('data-quick-user')));
@@ -1223,6 +1294,7 @@ function renderDashboardView() {
     btn.addEventListener('click', () => {
       const tId = btn.getAttribute('data-print-topic');
       state.printConfig.topicId = tId;
+      syncPrintDiffFromDashboard();
       renderPrintSetupView();
     });
   });
@@ -1245,6 +1317,7 @@ function renderDashboardView() {
       const uId = btn.getAttribute('data-print-unit');
       state.printConfig.topicId = null;
       state.printConfig.unitIds = [uId];
+      syncPrintDiffFromDashboard();
       renderPrintSetupView();
     });
   });
@@ -1297,13 +1370,14 @@ function startQuiz(mode, unitId = null, schoolFilter = null) {
     const subF = unitId === 'IDM' ? (schoolFilter || state.idiomSubFilter || 'ALL') : 'ALL';
     if (unitId === 'IDM') state.idiomSubFilter = subF;
     const allTopic = getTopicPool(unitId, subF);
-    pool = filterQuestionsByBatches(allTopic);
-    if (pool.length === 0) pool = allTopic;
+    const batchTopic = filterQuestionsByBatches(allTopic);
+    pool = filterQuestionsByDifficulty(batchTopic.length > 0 ? batchTopic : allTopic);
     const tObj = getCleanTopics().find(x => x.id === unitId);
     const subLabel = (unitId === 'IDM' && subF !== 'ALL')
       ? (subF === 'CTX' ? ' · 段考多選一填空' : ' · 成語釋義分類典故')
       : '';
-    state.quizTitle = (tObj ? tObj.title : unitId) + subLabel;
+    const diffLabel = getDifficultyFilterLabel();
+    state.quizTitle = (tObj ? tObj.title : unitId) + subLabel + (diffLabel ? ` · ${diffLabel}` : '');
   } else {
     nextUnitId = unitId;
     const isExam = isExamUnitId(unitId);
@@ -1317,16 +1391,17 @@ function startQuiz(mode, unitId = null, schoolFilter = null) {
       // 強制課本原題排在 1..29，期末段考真題排在 30..N，保障既有斷點續考與題號穩定
       allUnit.sort((a, b) => (a.lessonId === unitId ? 0 : 1) - (b.lessonId === unitId ? 0 : 1));
     }
-    pool = filterQuestionsByBatches(allUnit);
-    if (pool.length === 0) pool = allUnit;
+    const batchUnit = filterQuestionsByBatches(allUnit);
+    pool = filterQuestionsByDifficulty(batchUnit.length > 0 ? batchUnit : allUnit);
     const u = LESSONS.find(x => x.id === unitId);
-    state.quizTitle = (isExam && targetSchool !== 'ALL')
+    const diffLabel = getDifficultyFilterLabel();
+    state.quizTitle = ((isExam && targetSchool !== 'ALL')
       ? `${u ? u.title : unitId} · ${targetSchool}`
-      : (u ? u.title : '國語特訓');
+      : (u ? u.title : '國語特訓')) + (diffLabel ? ` · ${diffLabel}` : '');
   }
 
   if (pool.length === 0) {
-    showToast('目前篩選範圍內沒有題目喔！');
+    showToast('目前篩選的星等難度內沒有題目，請勾選其他星等！');
     return;
   }
 
@@ -1347,10 +1422,13 @@ function startQuiz(mode, unitId = null, schoolFilter = null) {
   // 檢查斷點續考紀錄
   const progMap = getUnitProgressMap();
   const activeSch = (mode === 'unit' && isExamUnitId(unitId)) ? getSelectedSchool(unitId) : 'ALL';
+  const diffSuffix = state.selectedDifficulties.length < ALL_DIFF_IDS.length
+    ? `_D_${[...state.selectedDifficulties].sort().join('_')}`
+    : '';
   const progKey = (mode === 'unit' && unitId)
-    ? (activeSch !== 'ALL' ? `${unitId}_${activeSch}` : unitId)
+    ? (activeSch !== 'ALL' ? `${unitId}_${activeSch}` : unitId) + diffSuffix
     : (mode === 'topic' && unitId)
-      ? `TOPIC_${unitId}_${unitId === 'IDM' ? state.idiomSubFilter : 'ALL'}`
+      ? `TOPIC_${unitId}_${unitId === 'IDM' ? state.idiomSubFilter : 'ALL'}` + diffSuffix
       : null;
   const saved = progKey ? progMap[progKey] : null;
   state.resumeTargetIdx = (saved && saved.index > 0 && saved.index < pool.length) ? saved.index : null;
@@ -2683,6 +2761,14 @@ function renderErrorBookView(filterUnit = null, filterTopic = null) {
     })
   ].join('');
 
+  const pDiffs = Array.isArray(state.printConfig.difficulties) && state.printConfig.difficulties.length > 0
+    ? state.printConfig.difficulties
+    : [...ALL_DIFF_IDS];
+  const printDiffChipsHtml = DIFFICULTY_TIERS.map(d => {
+    const on = pDiffs.includes(d.id);
+    return `<button type="button" class="chip diff-${d.id} ${on ? 'on' : ''}" data-print-diff-tier="${d.id}">${d.label}</button>`;
+  }).join('');
+
   const topicsList = getCleanTopics();
   const topicTabsHtml = topicsList.length > 0 ? [
     `<button class="chip ${!filterTopic ? 'on' : ''}" data-filter-topic="all">全部弱點 (${errorQuestions.length})</button>`,
@@ -2831,6 +2917,14 @@ function renderPrintSetupView() {
   const isMcqOnly = pBatches.includes('原本題庫') && !pBatches.includes('寫國字');
   const isAll = pBatches.length === ALL_BATCH_TYPES.length;
 
+  const pDiffs = Array.isArray(state.printConfig.difficulties) && state.printConfig.difficulties.length > 0
+    ? state.printConfig.difficulties
+    : [...ALL_DIFF_IDS];
+  const printDiffChipsHtml = DIFFICULTY_TIERS.map(d => {
+    const on = pDiffs.includes(d.id);
+    return `<button type="button" class="chip diff-${d.id} ${on ? 'on' : ''}" data-print-diff-tier="${d.id}">${d.label}</button>`;
+  }).join('');
+
   const topicsList = getCleanTopics();
   const curPrintMode = state.printConfig.printMode || 'student';
   const app = document.getElementById('app');
@@ -2868,6 +2962,13 @@ function renderPrintSetupView() {
             <button type="button" class="chip ${isAll ? 'on' : ''}" data-print-batch-mode="all">全題型綜合</button>
             <button type="button" class="chip ${isHwOnly ? 'on' : ''}" data-print-batch-mode="hw">純手寫國字注音</button>
             <button type="button" class="chip ${isMcqOnly ? 'on' : ''}" data-print-batch-mode="mcq">純選擇題卷</button>
+          </div>
+        </div>
+
+        <div class="field">
+          <label>⭐ 題目難度（可複選）：</label>
+          <div class="seg" style="display: flex; gap: 6px; flex-wrap: wrap;">
+            ${printDiffChipsHtml}
           </div>
         </div>
 
@@ -2950,6 +3051,27 @@ function renderPrintSetupView() {
     };
   });
 
+  app.querySelectorAll('[data-print-diff-tier]').forEach(btn => {
+    btn.onclick = () => {
+      const tid = btn.getAttribute('data-print-diff-tier');
+      const cur = Array.isArray(state.printConfig.difficulties) ? state.printConfig.difficulties : [...ALL_DIFF_IDS];
+      if (cur.includes(tid)) {
+        if (cur.length > 1) {
+          state.printConfig.difficulties = cur.filter(x => x !== tid);
+          btn.classList.remove('on');
+        } else {
+          showToast('至少保留一個難度等級喔！');
+          return;
+        }
+      } else {
+        state.printConfig.difficulties = [...cur, tid];
+        btn.classList.add('on');
+      }
+      state.printSelectionIds = null;
+      renderPaperSheet();
+    };
+  });
+
   const rangeInput = document.getElementById('print-q-count');
   const rangeVal = document.getElementById('print-q-count-val');
   rangeInput.oninput = () => {
@@ -2987,6 +3109,23 @@ function renderPaperSheet() {
   }
   if (pool.length === 0) {
     pool = [...basePool];
+  }
+  const pDiffs = Array.isArray(state.printConfig.difficulties) && state.printConfig.difficulties.length > 0
+    ? state.printConfig.difficulties
+    : ALL_DIFF_IDS;
+  pool = filterQuestionsByDifficulty(pool, pDiffs);
+
+  if (pool.length === 0) {
+    container.innerHTML = `
+      <div class="paper">
+        <div class="empty" style="padding: 48px 20px; text-align: center;">
+          <div class="emo" style="font-size: 42px;">⭐</div>
+          <h3>目前勾選的課次／主題在這個星等難度內沒有題目</h3>
+          <p class="muted">請在左側增勾其他星星難度（或調整課次／題型）即可立即產生試卷！</p>
+        </div>
+      </div>
+    `;
+    return;
   }
 
   let selected = [];
@@ -3147,12 +3286,13 @@ function renderPaperSheet() {
     }
   }).join('');
 
+  const printDiffLabel = getDifficultyFilterLabel(pDiffs);
   container.innerHTML = `
     <div class="paper">
       <div class="paper-head">
         <div>
           <h2>五上國語特訓・${isParentMode ? '🔑 家長詳解攻略卷' : '隨堂實戰測驗卷'}</h2>
-          <div class="sub">範圍：${titleUnits}（共 ${selected.length} 題）</div>
+          <div class="sub">範圍：${titleUnits}${printDiffLabel ? ` ｜ 難度：${printDiffLabel}` : ''}（共 ${selected.length} 題）</div>
           <div class="paper-fields">
             <span>姓名：<b>${curUser.name}</b></span>
             <span>日期：<i></i></span>
@@ -3334,7 +3474,10 @@ window.addEventListener('DOMContentLoaded', () => {
   document.getElementById('nav-home').onclick = () => renderDashboardView();
   document.getElementById('nav-user').onclick = () => openUserModal();
   document.getElementById('nav-errors').onclick = () => renderErrorBookView(null, null);
-  document.getElementById('nav-print').onclick = () => renderPrintSetupView();
+  document.getElementById('nav-print').onclick = () => {
+    syncPrintDiffFromDashboard();
+    renderPrintSetupView();
+  };
   document.getElementById('nav-export').onclick = () => renderExportView();
 
   if (!checkDeepLinkOnLoad()) {
